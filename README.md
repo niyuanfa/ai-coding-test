@@ -1,5 +1,7 @@
 # ai-coding-test
 
+本地启动、配置示例和故障排查见 [Mock 服务本地运行](docs/usage.md)。
+
 ## Mock 系统设计（NYF-36）
 
 供开发、联调和测试使用。调用方发送真实形状的 HTTP 请求，系统按配置返回可重复的 HTTP 响应。首批支持固定响应、按请求条件分流和固定延迟。转发、脚本执行、跨请求业务状态和随机故障注入留待后续设计。
@@ -18,12 +20,12 @@
 | 实体 | 字段与约束 |
 | --- | --- |
 | `Namespace` | `key` 为唯一且稳定的 URL 段，权限按 `key` 授予。 |
-| `Rule` | `id` 由服务端生成，`namespace` 与 `name` 在创建后固定，`state` 为 `disabled`、`enabled` 或 `deleted`，`activeVersion` 为生效版本号或 `null`，`latestVersion` 为最近创建的版本号，`revision` 为从 1 开始递增的管理修订号。`name` 为非空字符串，允许重名，管理操作以 `id` 定位。 |
+| `Rule` | `id` 全局唯一，可在创建时指定，省略时由服务端生成。`id`、`namespace` 与 `name` 在创建后固定，`state` 为 `disabled`、`enabled` 或 `deleted`，`activeVersion` 为生效版本号或 `null`，`latestVersion` 为最近创建的版本号，`revision` 为从 1 开始递增的管理修订号。`name` 为非空字符串，允许重名，管理操作以 `id` 定位。 |
 | `RuleVersion` | 由 `ruleId` 与从 1 开始递增的 `version` 标识。包含必填 `match`、`response` 与可选 `priority`，`priority` 默认为 0，范围为 0–1000 的整数，数值越大越优先。版本创建后不可修改。 |
 | `Match` | 必填 `method` 和 `path`，可选 `query`、`headers`、`jsonBody` 条件映射，缺省均为空。所有已配置条件同时满足才命中。 |
-| `Response` | `status` 必填，范围为 200–599 的整数。`headers` 为可选的单值字符串映射。`body` 为可选 JSON 值，省略时为空响应体，显式 `null` 返回 JSON `null`。`delayMs` 默认为 0，范围为 0–5000 的整数。 |
+| `Response` | `status` 必填，范围为 200–599 的整数。`headers` 为可选的单值字符串映射。`format` 可选，默认为 `json`，其 `body` 可为任意 JSON 值。`text` 格式的 `body` 为字符串，按 UTF-8 原样发送。省略 `body` 时为空响应体，JSON 格式下显式 `null` 返回 JSON `null`。`delayMs` 默认为 0，范围为 0–5000 的整数。 |
 
-管理请求使用 `application/json`。拒绝未知字段、重复 JSON 键、类型错误、越界值及非法条件，返回 `400 INVALID_CONFIG`。响应头名须为合法 HTTP 字段名，同名检查忽略大小写，值禁止包含 CR、LF。`Content-Length`、`Transfer-Encoding` 和逐跳头由系统处理，配置中禁止设置。配置了响应体时系统设置 `Content-Type: application/json`，若配置显式声明该头，其媒体类型须为 `application/json`。`204`、`205` 和 `304` 禁止配置响应体，`HEAD` 规则也禁止配置响应体。
+管理请求使用 `application/json`。拒绝未知字段、重复 JSON 键、类型错误、越界值及非法条件，返回 `400 INVALID_CONFIG`。响应头名须为合法 HTTP 字段名，同名检查忽略大小写，值禁止包含 CR、LF。`Content-Length`、`Transfer-Encoding` 和逐跳头由系统处理，配置中禁止设置。配置了响应体时，JSON 默认使用 `application/json`，文本默认使用 `text/plain; charset=utf-8`。显式配置 `Content-Type` 时，媒体类型必须与格式相符，显式字符集须为 UTF-8。文本缺少字符集时系统添加 `charset=utf-8`。`204`、`205` 和 `304` 禁止配置响应体，`HEAD` 规则也禁止配置响应体。
 
 ### 请求匹配
 
@@ -41,7 +43,7 @@
 
 | 方法与相对路径 | 请求 | 成功响应 |
 | --- | --- | --- |
-| `POST /` | `{name, match, response, priority?}`，带 `Idempotency-Key` | `201`，返回 `Rule`，`Location` 指向规则详情。创建禁用规则与版本 1。 |
+| `POST /` | `{id?, name, match, response, priority?}`，带 `Idempotency-Key` | `201`，返回 `Rule`，`Location` 指向规则详情。创建禁用规则与版本 1。 |
 | `GET /` | 可选 `state=enabled` 或 `state=disabled` | `200 {items: Rule[]}`，按 `id` 升序返回。可省略末尾 `/`。 |
 | `GET /{id}` | 无请求体 | `200 Rule`，带 ETag。 |
 | `GET /{id}/versions` | 无请求体 | `200 {items: RuleVersion[]}`，按版本号降序返回。 |
@@ -49,6 +51,8 @@
 | `PUT /{id}` | 完整 `{match, response, priority?}`，带 `If-Match` | `200 Rule`。创建新版本并更新 `latestVersion`，当前生效版本继续服务。与最近版本的规范化配置完全相同时直接返回现有规则。 |
 | `PUT /{id}/state` | `{"state":"enabled","version":2}` 或 `{"state":"disabled"}`，带 `If-Match` | `200 Rule`。启用或切换到指定版本时要求显式版本号，禁用时省略版本号并清空 `activeVersion`。 |
 | `DELETE /{id}` | 带 `If-Match`，无请求体 | `204`。软删除规则，撤下生效版本并保留内部历史记录。 |
+
+创建时可指定由 1–128 个 ASCII 字母、数字、下划线或连字符组成的 `id`。占用已有 ID 返回 `409 DUPLICATE_RULE_ID`，软删除后该 ID 仍保留。成功的幂等重放返回原创建结果。
 
 对规则详情、版本和写操作，目标规则缺失或已删除返回 `404 RULE_NOT_FOUND`。请求引用不存在的版本返回 `404 VERSION_NOT_FOUND`。缺少 `If-Match` 返回 `428 PRECONDITION_REQUIRED`，ETag 过期返回 `412 REVISION_MISMATCH`。启用或切换时占用已存在的匹配槽返回 `409 RULE_CONFLICT`。
 
@@ -107,6 +111,8 @@
 | 创建同一支付路径、优先级 `0`、无附加条件的兜底规则，启用后分别发送符合和缺少信用卡条件的请求 | 符合条件时命中优先级 `10` 的拒付规则，缺少条件时命中优先级 `0` 的兜底。 |
 | 向订单规则发送无 `include` 或重复 `include` 的请求，且无兜底规则 | `404 MOCK_RULE_NOT_FOUND`。 |
 | 在 24 小时内使用同一 `Idempotency-Key` 重放创建请求，再用该键创建不同配置 | 首次重放返回原 `201`、规则 ID 和 ETag。不同配置返回 `409 IDEMPOTENCY_KEY_REUSED`。 |
+| 以两个不同幂等键创建相同的显式 ID | 第一次创建返回 `201`，第二次返回 `409 DUPLICATE_RULE_ID`。 |
+| 启用响应配置为 `{"status":200,"format":"text","body":"你好"}` 的规则并调用 | 返回 `200`，`Content-Type` 为 `text/plain; charset=utf-8`，响应体为无 JSON 引号的 `你好`。 |
 | 版本切换后使用旧 ETag 尝试停用 | `412 REVISION_MISMATCH`，新版本继续生效。 |
 | 使用调用凭据创建规则，或访问无调用授权的命名空间 | 两种请求均返回 `403`。 |
 
