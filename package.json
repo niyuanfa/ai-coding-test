@@ -1,0 +1,12 @@
+{
+  "name": "ai-coding-test",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.cjs",
+    "test": "node --test test/*.test.cjs"
+  }
+}
